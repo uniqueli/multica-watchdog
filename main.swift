@@ -17,7 +17,11 @@ struct AppConfig: Codable {
     var funMode: Bool? = nil            // legacy, 已拆分为下面两项
     var soundEnabled: Bool? = nil
     var petEmoji: String = "🐕"
-    var soundMode: String = "voice"   // voice | system | custom
+    var soundMode: String = "voice"   // voice | system | custom | off
+    var dndEnabled: Bool = false
+    var dndStart: String = "22:00"
+    var dndEnd: String = "08:00"
+    var pausedUntil: Double? = nil    // epoch秒,定时暂停到期时刻
     var recent: [RecentItem] = []
 }
 
@@ -44,6 +48,8 @@ struct InboxItem: Codable {
     let created_at: String?
     let issue_id: String?
     let issue_status: String?
+    let actor_id: String?
+    let actor_type: String?
 }
 
 // MARK: - 状态
@@ -116,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         UNUserNotificationCenter.current().delegate = self
 
+        loadActors()
         poll()
         scheduleTimer()
 
@@ -123,7 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                 self?.notify([InboxItem(id: "demo-\(Int(Date().timeIntervalSince1970))", type: "mentioned",
                                         title: "趣味模式演示:有人@你啦", read: false, archived: false,
-                                        created_at: nil, issue_id: nil, issue_status: nil)])
+                                        created_at: nil, issue_id: nil, issue_status: nil, actor_id: nil, actor_type: nil)])
             }
         }
     }
@@ -170,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func poll() {
-        guard !cfg.paused, let creds else { return }
+        guard !effectivePaused, let creds else { return }
         guard let url = URL(string: "\(creds.server_url.replacingOccurrences(of: "http://", with: "https://"))/api/inbox?workspace_id=\(creds.workspace_id ?? "")") else { return }
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.setValue("Bearer " + creds.token, forHTTPHeaderField: "Authorization")
@@ -224,6 +231,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }.resume()
     }
 
+    func loadActors() {
+        guard let creds else { return }
+        let base = creds.server_url.replacingOccurrences(of: "http://", with: "https://")
+        let ws = creds.workspace_id ?? ""
+        let paths = ["/api/workspaces/\(ws)/members", "/api/agents?workspace_id=\(ws)"]
+        let sc = URLSessionConfiguration.ephemeral
+        sc.connectionProxyDictionary = [:]
+        let grp = DispatchGroup()
+        for p in paths {
+            guard let url = URL(string: base + p) else { continue }
+            var req = URLRequest(url: url, timeoutInterval: 15)
+            req.setValue("Bearer " + creds.token, forHTTPHeaderField: "Authorization")
+            grp.enter()
+            URLSession(configuration: sc).dataTask(with: req) { [weak self] data, resp, _ in
+                defer { grp.leave() }
+                guard let data, (200...299).contains((resp as? HTTPURLResponse)?.statusCode ?? 0),
+                      let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+                var got = 0
+                for o in arr {
+                    if let i = o["id"] as? String, let n = o["name"] as? String {
+                        self?.actors[i] = n; got += 1
+                    }
+                }
+                dbg("[actors] \(p) 解析 \(got) 条")
+            }.resume()
+        }
+    }
+
+    func actorName(_ id: String?) -> String {
+        guard let id else { return "" }
+        return actors[id] ?? ""
+    }
+
+    func inDND() -> Bool {
+        guard cfg.dndEnabled else { return false }
+        let df = DateFormatter()
+        df.dateFormat = "HH:mm"
+        let cur = df.string(from: Date())
+        let a = cfg.dndStart, b = cfg.dndEnd
+        guard a.count == 5, b.count == 5 else { return false }
+        return a <= b ? (cur >= a && cur < b) : (cur >= a || cur < b)
+    }
+
+    var effectivePaused: Bool {
+        cfg.paused || (cfg.pausedUntil ?? 0) > Date().timeIntervalSince1970
+    }
+
     func parseDate(_ s: String?) -> Date {
         guard let s, let d = isoIn.date(from: s) else { return .distantPast }
         return d
@@ -232,6 +286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // MARK: 趣味效果
 
     var speaker: AVSpeechSynthesizer?
+    var actors: [String: String] = [:]
 
     func customSoundURL() -> URL? {
         let dir = home + "/.multica-watchdog"
@@ -271,33 +326,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func notify(_ items: [InboxItem]) {
         unreadNew += items.count
+        let silent = inDND()
         let first = items.first
-        if first?.type == "mentioned" {
-            playFun("mentioned")
-        } else {
-            playFun("status")
+        if !silent {
+            if first?.type == "mentioned" { playFun("mentioned") } else { playFun("status") }
         }
         var cap = items; if cap.count > 5 { cap = Array(cap.prefix(5)) }
         let center = UNUserNotificationCenter.current()
         for it in cap {
+            let who = actorName(it.actor_id)
             let content = UNMutableNotificationContent()
             switch it.type {
-            case "mentioned": content.title = "【Multica】有人@你"
-            default: content.title = "【Multica】任务状态更新"
+            case "mentioned": content.title = "【Multica】\(who.isEmpty ? "有人" : who) @你"
+            default: content.title = "【Multica】\(who.isEmpty ? "任务" : who) · 状态更新"
             }
             content.body = "\(it.title ?? "(无标题)")" + (it.issue_status.map { " → \($0)" } ?? "")
             content.sound = .default
             if let iid = it.issue_id { content.userInfo = ["issue": iid] }
             let req = UNNotificationRequest(identifier: it.id, content: content, trigger: nil)
-            center.add(req)
+            if !silent { center.add(req) }
+            else { dbg("[dnd] 静默记录: \(it.title ?? "")") }
             center.getNotificationSettings { st in
-                if st.authorizationStatus != .authorized {
+                if !silent, st.authorizationStatus != .authorized {
                     let p = Process(); p.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
                     p.arguments = ["-e", "display notification \(String(describing: content.body).replacingOccurrences(of: "\"", with: "'")) with title \(String(describing: content.title).replacingOccurrences(of: "\"", with: "'")) sound name \"Glass\""]
                     try? p.run()
                 }
             }
-            cfg.recent.insert(RecentItem(id: it.id, title: content.body, issueID: it.issue_id ?? "", at: it.created_at ?? ""), at: 0)
+            cfg.recent.insert(RecentItem(id: it.id, title: content.title.replacingOccurrences(of: "【Multica】", with: "") + " " + content.body, issueID: it.issue_id ?? "", at: it.created_at ?? ""), at: 0)
         }
         if items.count > 5 {
             let sum = UNMutableNotificationContent()
@@ -359,6 +415,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case .badCreds: stateStr = "❗ 凭证失效(multica login)"
         }
         menu.addItem(disabled(stateStr))
+        if effectivePaused {
+            let until: String
+            if let u = cfg.pausedUntil, u > Date().timeIntervalSince1970 {
+                let df = DateFormatter(); df.dateFormat = "HH:mm"
+                until = "至 " + df.string(from: Date(timeIntervalSince1970: u))
+            } else { until = "手动恢复前" }
+            menu.addItem(disabled("⏸ 已暂停(" + until + ")"))
+        }
+        if inDND() { menu.addItem(disabled("🌙 免打扰中 \(cfg.dndStart)–\(cfg.dndEnd)")) }
         menu.addItem(disabled("最近检查: " + (lastCheck.map { "\(Int(Date().timeIntervalSince($0))) 秒前" } ?? "—")))
         menu.addItem(.separator())
 
@@ -382,6 +447,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         fsub.addItem(fm1); fsub.addItem(fm2)
         filterItem.submenu = fsub
         menu.addItem(filterItem)
+
+        let dndItem = NSMenuItem(title: "🌙 免打扰", action: nil, keyEquivalent: "")
+        let dsub = NSMenu()
+        let dndOff = NSMenuItem(title: (!cfg.dndEnabled ? "✓ " : "   ") + "关闭", action: #selector(setDND(_:)), keyEquivalent: "")
+        dndOff.target = self; dndOff.representedObject = "off"
+        dsub.addItem(dndOff)
+        for range in ["22:00-08:00", "23:00-07:00"] {
+            let on = cfg.dndEnabled && cfg.dndStart + "-" + cfg.dndEnd == range
+            let mi = NSMenuItem(title: (on ? "✓ " : "   ") + range.replacingOccurrences(of: "-", with: " – "),
+                                action: #selector(setDND(_:)), keyEquivalent: "")
+            mi.target = self; mi.representedObject = range
+            dsub.addItem(mi)
+        }
+        let dndC = NSMenuItem(title: "✏️ 自定义时段...", action: #selector(askDND), keyEquivalent: "")
+        dndC.target = self; dsub.addItem(dndC)
+        dndItem.submenu = dsub
+        menu.addItem(dndItem)
 
 
         let petItem = NSMenuItem(title: "🎨 宠物形象", action: nil, keyEquivalent: "")
@@ -410,9 +492,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menu.addItem(sndItem)
         menu.addItem(.separator())
 
-        let pause = NSMenuItem(title: cfg.paused ? "▶ 恢复通知" : "⏸ 暂停通知",
-                               action: #selector(togglePause), keyEquivalent: "p")
-        pause.target = self; menu.addItem(pause)
+        if effectivePaused {
+            let resume = NSMenuItem(title: "▶ 立即恢复", action: #selector(resumePause), keyEquivalent: "p")
+            resume.target = self; menu.addItem(resume)
+        } else {
+            let pauseItem = NSMenuItem(title: "⏸ 暂停通知", action: nil, keyEquivalent: "")
+            let psub = NSMenu()
+            for (key, label) in [("3600", "暂停 1 小时"), ("morning", "暂停到明早 8 点"), ("manual", "直到手动恢复")] {
+                let mi = NSMenuItem(title: "   " + label, action: #selector(pauseFor(_:)), keyEquivalent: "")
+                mi.target = self; mi.representedObject = key
+                psub.addItem(mi)
+            }
+            pauseItem.submenu = psub
+            menu.addItem(pauseItem)
+        }
 
         let web = NSMenuItem(title: "📖 打开 Multica", action: #selector(openWeb), keyEquivalent: "m")
         web.target = self; menu.addItem(web)
@@ -431,6 +524,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 menu.addItem(mi)
             }
         }
+        menu.addItem(.separator())
+        let perm = NSMenuItem(title: "🔔 开启系统通知权限", action: #selector(openNotifSettings), keyEquivalent: "")
+        perm.target = self; menu.addItem(perm)
         menu.addItem(.separator())
         let quit = menu.addItem(withTitle: "退出", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
@@ -496,9 +592,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         else { cfg.notifyStatus.toggle() }
         saveState()
     }
-    @objc func togglePause() {
-        cfg.paused.toggle(); saveState(); refreshIcon()
-        if !cfg.paused { poll() }
+    @objc func resumePause() {
+        cfg.paused = false; cfg.pausedUntil = nil
+        saveState(); refreshIcon(); poll()
+    }
+    @objc func pauseFor(_ sender: NSMenuItem) {
+        let key = sender.representedObject as! String
+        if key == "manual" {
+            cfg.paused = true; cfg.pausedUntil = nil
+        } else if key == "morning" {
+            var c = Calendar.current; c.timeZone = .current
+            let now = Date()
+            var t = c.date(bySettingHour: 8, minute: 0, second: 0, of: now) ?? now
+            if t <= now { t = c.date(byAdding: .day, value: 1, to: t) ?? t }
+            cfg.paused = false; cfg.pausedUntil = t.timeIntervalSince1970
+        } else if let sec = Double(key) {
+            cfg.paused = false; cfg.pausedUntil = Date().addingTimeInterval(sec).timeIntervalSince1970
+        }
+        saveState(); refreshIcon()
+    }
+    @objc func setDND(_ sender: NSMenuItem) {
+        let v = sender.representedObject as! String
+        if v == "off" { cfg.dndEnabled = false }
+        else {
+            let parts = v.split(separator: "-").map(String.init)
+            if parts.count == 2, parts[0].count == 5, parts[1].count == 5 {
+                cfg.dndStart = parts[0]; cfg.dndEnd = parts[1]; cfg.dndEnabled = true
+            }
+        }
+        saveState()
+    }
+    @objc func askDND() {
+        let alert = NSAlert()
+        alert.messageText = "自定义免打扰时段"
+        alert.informativeText = "格式 HH:MM-HH:MM(如 22:30-07:30,可跨午夜)"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 160, height: 24))
+        input.stringValue = cfg.dndStart + "-" + cfg.dndEnd
+        alert.accessoryView = input
+        alert.addButton(withTitle: "确定"); alert.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
+            let parts = input.stringValue.split(separator: "-").map(String.init)
+            if parts.count == 2, parts[0].count == 5, parts[1].count == 5 {
+                cfg.dndStart = parts[0]; cfg.dndEnd = parts[1]; cfg.dndEnabled = true
+                saveState()
+            }
+        }
+    }
+    @objc func openNotifSettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
     }
     @objc func openRecent(_ sender: NSMenuItem) {
         if let iid = sender.representedObject as? String, !iid.isEmpty { openIssue(iid) } else { openWeb() }
