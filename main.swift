@@ -11,6 +11,8 @@ import Foundation
 struct AppConfig: Codable {
     var intervalSec: Double = 30
     var paused: Bool = false
+    var notifyMention: Bool = true
+    var notifyStatus: Bool = true
     var recent: [RecentItem] = []
 }
 
@@ -111,8 +113,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // MARK: 凭证 / 持久化
 
     func loadCreds() {
-        guard let c: MulticaCreds = loadJSON(credsPath) else {
-            dbg("[creds] 无法读取 ~/.multica/config.json")
+        var c: MulticaCreds? = loadJSON(credsPath)
+        if c == nil || c?.token.isEmpty == true {
+            // 队友可能只有桌面端profile凭证
+            let pdir = home + "/.multica/profiles"
+            if let dirs = try? fm.contentsOfDirectory(atPath: pdir) {
+                for d in dirs.sorted() where c == nil {
+                    let pc: MulticaCreds? = loadJSON(pdir + "/" + d + "/config.json")
+                    if let pc, !pc.token.isEmpty { c = pc; dbg("[creds] 用profile凭证: \(d)") }
+                }
+            }
+        }
+        guard let c else {
+            dbg("[creds] 无可用凭证(先 multica login)")
             conn = .badCreds; return
         }
         creds = c
@@ -165,7 +178,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 if !self.seeded, self.seen.isEmpty, let s: [String] = self.loadJSON(seenPath) {
                     self.seen = Set(s)
                 }
-                let fresh = items.filter { ($0.read != true) && ($0.archived != true) && watchTypes.contains($0.type) }
+                var types = watchTypes
+                if !self.cfg.notifyMention { types.remove("mentioned") }
+                if !self.cfg.notifyStatus { types.remove("status_changed") }
+                let fresh = items.filter { ($0.read != true) && ($0.archived != true) && types.contains($0.type) }
                 if !self.seeded && self.seen.isEmpty {
                     // 首次运行:播种全部,只补通知近3分钟
                     self.seen = Set(fresh.map(\.id))
@@ -240,7 +256,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         h()
     }
 
-    func openIssue(_ iid: String) { NSWorkspace.shared.open(URL(string: "\(appWebURL)/issues/\(iid)")!) }
+    func localAppExists() -> Bool {
+        fm.fileExists(atPath: "/Applications/Multica.app") || fm.fileExists(atPath: home + "/Applications/Multica.app")
+    }
+    @objc func openWeb() {
+        if localAppExists() {
+            let path = fm.fileExists(atPath: "/Applications/Multica.app") ? "/Applications/Multica.app" : home + "/Applications/Multica.app"
+            NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: NSWorkspace.OpenConfiguration())
+        } else {
+            NSWorkspace.shared.open(URL(string: appWebURL)!)
+        }
+    }
+    func openIssue(_ iid: String) {
+        // 本地App优先(multica:// scheme),失败回落网页
+        if localAppExists(), let deep = URL(string: "multica://issues/\(iid)") {
+            if NSWorkspace.shared.open(deep) { return }
+        }
+        NSWorkspace.shared.open(URL(string: "\(appWebURL)/issues/\(iid)")!)
+    }
 
     // MARK: 菜单
 
@@ -275,6 +308,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         intervalItem.submenu = sub
         menu.addItem(intervalItem)
+
+        let filterItem = NSMenuItem(title: "通知过滤", action: nil, keyEquivalent: "")
+        let fsub = NSMenu()
+        let fm1 = NSMenuItem(title: (cfg.notifyMention ? "✓ " : "   ") + "有人@我", action: #selector(toggleFilter(_:)), keyEquivalent: "")
+        fm1.target = self; fm1.representedObject = "mention"
+        let fm2 = NSMenuItem(title: (cfg.notifyStatus ? "✓ " : "   ") + "任务状态/完成", action: #selector(toggleFilter(_:)), keyEquivalent: "")
+        fm2.target = self; fm2.representedObject = "status"
+        fsub.addItem(fm1); fsub.addItem(fm2)
+        filterItem.submenu = fsub
+        menu.addItem(filterItem)
         menu.addItem(.separator())
 
         let pause = NSMenuItem(title: cfg.paused ? "▶ 恢复通知" : "⏸ 暂停通知",
@@ -313,11 +356,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         cfg.intervalSec = sender.representedObject as! Double
         saveState(); scheduleTimer(); refreshIcon()
     }
+    @objc func toggleFilter(_ sender: NSMenuItem) {
+        if sender.representedObject as? String == "mention" { cfg.notifyMention.toggle() }
+        else { cfg.notifyStatus.toggle() }
+        saveState()
+    }
     @objc func togglePause() {
         cfg.paused.toggle(); saveState(); refreshIcon()
         if !cfg.paused { poll() }
     }
-    @objc func openWeb() { NSWorkspace.shared.open(URL(string: appWebURL)!) }
     @objc func openRecent(_ sender: NSMenuItem) {
         if let iid = sender.representedObject as? String, !iid.isEmpty { openIssue(iid) } else { openWeb() }
     }
