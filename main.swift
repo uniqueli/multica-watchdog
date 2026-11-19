@@ -14,7 +14,9 @@ struct AppConfig: Codable {
     var paused: Bool = false
     var notifyMention: Bool = true
     var notifyStatus: Bool = true
-    var funMode: Bool = true
+    var funMode: Bool? = nil            // legacy, 已拆分为下面两项
+    var soundEnabled: Bool? = nil
+    var bubbleEnabled: Bool? = nil
     var petEmoji: String = "🐕"
     var soundMode: String = "voice"   // voice | system | custom
     var recent: [RecentItem] = []
@@ -56,6 +58,11 @@ let credsPath = home + "/.multica/config.json"
 let launchAgentPlist = home + "/Library/LaunchAgents/com.uniqueli.multica-watchdog.plist"
 let intervals: [(Double, String)] = [(30, "30 秒"), (60, "1 分钟"), (300, "5 分钟"), (900, "15 分钟")]
 let watchTypes: Set<String> = ["mentioned", "status_changed"]
+
+extension AppConfig {
+    var soundOn: Bool { soundEnabled ?? funMode ?? true }
+    var bubbleOn: Bool { bubbleEnabled ?? funMode ?? true }
+}
 
 let dbgPath = home + "/.multica-watchdog.log"
 func dbg(_ s: String) {
@@ -238,7 +245,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func playFun(_ kind: String) {
-        guard cfg.funMode else { return }
+        guard cfg.soundOn else { return }
         switch cfg.soundMode {
         case "system":
             NSSound(named: "Ping")?.play()
@@ -263,7 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func showBubble(_ text: String) {
-        guard cfg.funMode else { return }
+        guard cfg.bubbleOn else { return }
         bubble?.orderOut(nil)
         guard let btn = statusItem.button, let win = btn.window else { return }
         let panel = NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
@@ -413,9 +420,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         filterItem.submenu = fsub
         menu.addItem(filterItem)
 
-        let fun = NSMenuItem(title: (cfg.funMode ? "🎉 趣味模式: 开" : "🎉 趣味模式: 关"),
-                             action: #selector(toggleFun), keyEquivalent: "")
-        fun.target = self; menu.addItem(fun)
+        let snd = NSMenuItem(title: cfg.soundOn ? "🔊 声音提醒: 开" : "🔊 声音提醒: 关",
+                              action: #selector(toggleSound), keyEquivalent: "")
+        snd.target = self; menu.addItem(snd)
+        let bub = NSMenuItem(title: cfg.bubbleOn ? "💬 气泡提醒: 开" : "💬 气泡提醒: 关",
+                              action: #selector(toggleBubble), keyEquivalent: "")
+        bub.target = self; menu.addItem(bub)
 
         let petItem = NSMenuItem(title: "🎨 宠物形象", action: nil, keyEquivalent: "")
         let psub = NSMenu()
@@ -523,7 +533,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             cfg.soundMode = mode; saveState(); playFun("demo")
         }
     }
-    @objc func toggleFun() { cfg.funMode.toggle(); saveState(); if cfg.funMode { playFun("status") } }
+    @objc func toggleSound() { cfg.soundEnabled = !cfg.soundOn; saveState(); if cfg.soundOn { playFun("demo") } }
+    @objc func toggleBubble() { cfg.bubbleEnabled = !cfg.bubbleOn; saveState(); if cfg.bubbleOn { showBubble("气泡已开启") } }
     @objc func toggleFilter(_ sender: NSMenuItem) {
         if sender.representedObject as? String == "mention" { cfg.notifyMention.toggle() }
         else { cfg.notifyStatus.toggle() }
