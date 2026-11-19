@@ -106,6 +106,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }()
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        // 单实例接管: 已有实例在跑(如旧版本未退出)→替换之
+        if let bid = Bundle.main.bundleIdentifier {
+            let me = ProcessInfo.processInfo.processIdentifier
+            let others = NSRunningApplication.runningApplications(withBundleIdentifier: bid).filter { $0.processIdentifier != me }
+            if !others.isEmpty {
+                dbg("[single] 接管旧实例: \(others.map(\.processIdentifier))")
+                for o in others { o.terminate() }
+                Thread.sleep(forTimeInterval: 0.8)
+            }
+        }
         dbg("[launch] start")
         cfg = loadJSON(cfgPath) ?? AppConfig()
         if cfg.soundEnabled == false { cfg.soundMode = "off" }   // 旧静音开关迁移
@@ -525,6 +535,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
         menu.addItem(.separator())
+        let restart = NSMenuItem(title: "🔄 重启(更新后生效)", action: #selector(restartApp), keyEquivalent: "r")
+        restart.target = self; menu.addItem(restart)
         let perm = NSMenuItem(title: "🔔 开启系统通知权限", action: #selector(openNotifSettings), keyEquivalent: "")
         perm.target = self; menu.addItem(perm)
         menu.addItem(.separator())
@@ -638,6 +650,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 saveState()
             }
         }
+    }
+    @objc func restartApp() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/sh")
+        p.arguments = ["-c", "sleep 1; open '" + Bundle.main.bundleURL.path + "'"]
+        try? p.run()
+        NSApp.terminate(nil)
     }
     @objc func openNotifSettings() {
         NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
