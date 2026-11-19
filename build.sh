@@ -8,6 +8,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp MulticaWatchdog "$APP/Contents/MacOS/"
 cp Info.plist "$APP/Contents/"
+codesign --force --sign - --identifier com.uniqueli.multica-watchdog "$APP" 2>/dev/null || true
 mkdir -p "$APP/Contents/Resources"
 cp -r assets/* "$APP/Contents/Resources/"
 echo "✅ 构建完成: $APP"
