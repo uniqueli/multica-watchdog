@@ -15,6 +15,8 @@ struct AppConfig: Codable {
     var notifyMention: Bool = true
     var notifyStatus: Bool = true
     var funMode: Bool = true
+    var petEmoji: String = "🐕"
+    var soundMode: String = "voice"   // voice | system | custom
     var recent: [RecentItem] = []
 }
 
@@ -226,18 +228,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     var bubble: NSPanel?
     var speaker: AVSpeechSynthesizer?
 
+    func customSoundURL() -> URL? {
+        let dir = home + "/.multica-watchdog"
+        for ext in ["mp3", "wav", "aiff", "aif", "m4a"] {
+            let p = dir + "/alert." + ext
+            if fm.fileExists(atPath: p) { return URL(fileURLWithPath: p) }
+        }
+        return nil
+    }
+
     func playFun(_ kind: String) {
         guard cfg.funMode else { return }
-        // 语音播报"有消息，快查看";无中文语音时回落系统提示音
-        guard let v = AVSpeechSynthesisVoice(language: "zh-CN") else {
-            NSSound(named: "Ping")?.play(); return
+        switch cfg.soundMode {
+        case "system":
+            NSSound(named: "Ping")?.play()
+        case "custom":
+            if let u = customSoundURL(), let snd = NSSound(contentsOf: u, byReference: true) {
+                snd.play()
+            } else {
+                dbg("[sound] 自定义声音文件缺失,回落Ping")
+                NSSound(named: "Ping")?.play()
+            }
+        default:  // voice
+            guard let v = AVSpeechSynthesisVoice(language: "zh-CN") else {
+                NSSound(named: "Ping")?.play(); return
+            }
+            if speaker == nil { speaker = AVSpeechSynthesizer() }
+            speaker?.stopSpeaking(at: .immediate)
+            let u = AVSpeechUtterance(string: "有消息，快查看")
+            u.voice = v
+            u.rate = AVSpeechUtteranceDefaultSpeechRate
+            speaker?.speak(u)
         }
-        if speaker == nil { speaker = AVSpeechSynthesizer() }
-        speaker?.stopSpeaking(at: .immediate)
-        let u = AVSpeechUtterance(string: "有消息，快查看")
-        u.voice = v
-        u.rate = AVSpeechUtteranceDefaultSpeechRate
-        speaker?.speak(u)
     }
 
     func showBubble(_ text: String) {
@@ -249,7 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
-        let label = NSTextField(labelWithString: "🐕💬 " + text)
+        let label = NSTextField(labelWithString: cfg.petEmoji + "💬 " + text)
         label.font = .systemFont(ofSize: 13, weight: .medium)
         label.lineBreakMode = .byTruncatingTail
         label.cell?.truncatesLastVisibleLine = true
@@ -350,7 +372,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     // MARK: 菜单
 
     func refreshIcon() {
-        let base = "🐕"
+        let base = cfg.petEmoji
         switch conn {
         case .ok: statusItem.button?.title = unreadNew > 0 ? base + "·\(min(unreadNew, 99))" : base
         case .offline: statusItem.button?.title = base + "💤"
@@ -394,6 +416,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let fun = NSMenuItem(title: (cfg.funMode ? "🎉 趣味模式: 开" : "🎉 趣味模式: 关"),
                              action: #selector(toggleFun), keyEquivalent: "")
         fun.target = self; menu.addItem(fun)
+
+        let petItem = NSMenuItem(title: "🎨 宠物形象", action: nil, keyEquivalent: "")
+        let psub = NSMenu()
+        for e in ["🐕", "🐈", "🐇", "🐼", "🦊", "🐸"] {
+            let mi = NSMenuItem(title: (cfg.petEmoji == e ? "✓ " : "   ") + e,
+                                action: #selector(setPet(_:)), keyEquivalent: "")
+            mi.target = self; mi.representedObject = e
+            psub.addItem(mi)
+        }
+        let customPet = NSMenuItem(title: "✏️ 自定义emoji...", action: #selector(askPet), keyEquivalent: "")
+        customPet.target = self
+        psub.addItem(customPet)
+        petItem.submenu = psub
+        menu.addItem(petItem)
+
+        let sndItem = NSMenuItem(title: "🔊 提醒声音", action: nil, keyEquivalent: "")
+        let ssub = NSMenu()
+        for (mode, label) in [("voice", "语音播报·有消息快查看"), ("system", "系统提示音"), ("custom", "自定义声音文件...")] {
+            let mi = NSMenuItem(title: (cfg.soundMode == mode ? "✓ " : "   ") + label,
+                                action: #selector(setSound(_:)), keyEquivalent: "")
+            mi.target = self; mi.representedObject = mode
+            ssub.addItem(mi)
+        }
+        sndItem.submenu = ssub
+        menu.addItem(sndItem)
         menu.addItem(.separator())
 
         let pause = NSMenuItem(title: cfg.paused ? "▶ 恢复通知" : "⏸ 暂停通知",
@@ -431,6 +478,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc func setInterval(_ sender: NSMenuItem) {
         cfg.intervalSec = sender.representedObject as! Double
         saveState(); scheduleTimer(); refreshIcon()
+    }
+    @objc func setPet(_ sender: NSMenuItem) {
+        cfg.petEmoji = sender.representedObject as! String
+        saveState(); refreshIcon()
+    }
+    @objc func askPet() {
+        let alert = NSAlert()
+        alert.messageText = "自定义宠物形象"
+        alert.informativeText = "输入任意 emoji(建议单个)"
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        input.stringValue = cfg.petEmoji
+        alert.accessoryView = input
+        alert.addButton(withTitle: "确定")
+        alert.addButton(withTitle: "取消")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn, !input.stringValue.isEmpty {
+            cfg.petEmoji = String(input.stringValue.prefix(2))
+            saveState(); refreshIcon()
+        }
+    }
+    @objc func setSound(_ sender: NSMenuItem) {
+        let mode = sender.representedObject as! String
+        if mode == "custom" {
+            let panel = NSOpenPanel()
+            panel.allowedContentTypes = [.audio, .mp3, .wav, .aiff]
+            panel.allowsOtherFileTypes = false
+            panel.canChooseDirectories = false
+            panel.message = "选择提醒声音文件(将复制到 ~/.multica-watchdog/alert.*)"
+            NSApp.activate(ignoringOtherApps: true)
+            if panel.runModal() == .OK, let url = panel.url {
+                let ext = url.pathExtension.isEmpty ? "wav" : url.pathExtension
+                let dst = home + "/.multica-watchdog/alert." + ext
+                try? fm.removeItem(atPath: dst)
+                // 清掉旧扩展名的文件
+                for e in ["mp3", "wav", "aiff", "aif", "m4a"] {
+                    try? fm.removeItem(atPath: home + "/.multica-watchdog/alert." + e)
+                }
+                try? fm.copyItem(at: url, to: URL(fileURLWithPath: dst))
+                cfg.soundMode = "custom"; saveState()
+                playFun("demo")
+            }
+        } else {
+            cfg.soundMode = mode; saveState(); playFun("demo")
+        }
     }
     @objc func toggleFun() { cfg.funMode.toggle(); saveState(); if cfg.funMode { playFun("status") } }
     @objc func toggleFilter(_ sender: NSMenuItem) {
