@@ -16,7 +16,6 @@ struct AppConfig: Codable {
     var notifyStatus: Bool = true
     var funMode: Bool? = nil            // legacy, 已拆分为下面两项
     var soundEnabled: Bool? = nil
-    var bubbleEnabled: Bool? = nil
     var petEmoji: String = "🐕"
     var soundMode: String = "voice"   // voice | system | custom
     var recent: [RecentItem] = []
@@ -60,8 +59,7 @@ let intervals: [(Double, String)] = [(30, "30 秒"), (60, "1 分钟"), (300, "5 
 let watchTypes: Set<String> = ["mentioned", "status_changed"]
 
 extension AppConfig {
-    var soundOn: Bool { soundEnabled ?? funMode ?? true }
-    var bubbleOn: Bool { bubbleEnabled ?? funMode ?? true }
+    var soundOn: Bool { soundMode != "off" && (soundEnabled ?? funMode ?? true) }
 }
 
 let dbgPath = home + "/.multica-watchdog.log"
@@ -104,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     func applicationDidFinishLaunching(_ n: Notification) {
         dbg("[launch] start")
         cfg = loadJSON(cfgPath) ?? AppConfig()
+        if cfg.soundEnabled == false { cfg.soundMode = "off" }   // 旧静音开关迁移
         loadCreds()
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.font = NSFont.menuBarFont(ofSize: 15)
@@ -232,7 +231,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     // MARK: 趣味效果
 
-    var bubble: NSPanel?
     var speaker: AVSpeechSynthesizer?
 
     func customSoundURL() -> URL? {
@@ -269,42 +267,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    func showBubble(_ text: String) {
-        guard cfg.bubbleOn else { return }
-        bubble?.orderOut(nil)
-        guard let btn = statusItem.button, let win = btn.window else { return }
-        let panel = NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
-        panel.level = .statusBar
-        panel.isOpaque = false
-        panel.backgroundColor = .clear
-        panel.hasShadow = true
-        let label = NSTextField(labelWithString: cfg.petEmoji + "💬 " + text)
-        label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.lineBreakMode = .byTruncatingTail
-        label.cell?.truncatesLastVisibleLine = true
-        label.cell?.wraps = false
-        label.wantsLayer = true
-        label.layer?.cornerRadius = 10
-        label.layer?.masksToBounds = true
-        label.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
-        label.layer?.borderColor = NSColor.separatorColor.cgColor
-        label.layer?.borderWidth = 1
-        let sz = label.fittingSize
-        label.frame = NSRect(x: 8, y: 6, width: min(sz.width + 8, 420), height: sz.height + 6)
-        panel.setContentSize(NSSize(width: label.frame.maxX + 8, height: label.frame.maxY + 4))
-        panel.contentView = label
-        let btnFrame = win.convertToScreen(btn.convert(btn.bounds, to: nil))
-        panel.setFrameOrigin(NSPoint(x: btnFrame.maxX - panel.frame.width, y: btnFrame.minY - panel.frame.height - 6))
-        bubble = panel
-        panel.alphaValue = 0
-        panel.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.25; panel.animator().alphaValue = 1 }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-            NSAnimationContext.runAnimationGroup({ ctx in ctx.duration = 0.5; panel.animator().alphaValue = 0 },
-                completionHandler: { panel.orderOut(nil); self?.bubble = nil })
-        }
-    }
-
     // MARK: 通知
 
     func notify(_ items: [InboxItem]) {
@@ -312,7 +274,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let first = items.first
         if first?.type == "mentioned" {
             playFun("mentioned")
-            showBubble("@你: " + (first?.title ?? ""))
         } else {
             playFun("status")
         }
@@ -351,6 +312,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func userNotificationCenter(_ c: UNUserNotificationCenter, didReceive r: UNNotificationResponse, withCompletionHandler h: @escaping () -> Void) {
+        unreadNew = 0
+        refreshIcon()
         if let iid = r.notification.request.content.userInfo["issue"] as? String {
             openIssue(iid)
         }
@@ -420,12 +383,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         filterItem.submenu = fsub
         menu.addItem(filterItem)
 
-        let snd = NSMenuItem(title: cfg.soundOn ? "🔊 声音提醒: 开" : "🔊 声音提醒: 关",
-                              action: #selector(toggleSound), keyEquivalent: "")
-        snd.target = self; menu.addItem(snd)
-        let bub = NSMenuItem(title: cfg.bubbleOn ? "💬 气泡提醒: 开" : "💬 气泡提醒: 关",
-                              action: #selector(toggleBubble), keyEquivalent: "")
-        bub.target = self; menu.addItem(bub)
 
         let petItem = NSMenuItem(title: "🎨 宠物形象", action: nil, keyEquivalent: "")
         let psub = NSMenu()
@@ -443,7 +400,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         let sndItem = NSMenuItem(title: "🔊 提醒声音", action: nil, keyEquivalent: "")
         let ssub = NSMenu()
-        for (mode, label) in [("voice", "语音播报·有消息快查看"), ("system", "系统提示音"), ("custom", "自定义声音文件...")] {
+        for (mode, label) in [("voice", "语音播报·有消息快查看"), ("system", "系统提示音"), ("custom", "自定义声音文件..."), ("off", "静音")] {
             let mi = NSMenuItem(title: (cfg.soundMode == mode ? "✓ " : "   ") + label,
                                 action: #selector(setSound(_:)), keyEquivalent: "")
             mi.target = self; mi.representedObject = mode
@@ -530,11 +487,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 playFun("demo")
             }
         } else {
-            cfg.soundMode = mode; saveState(); playFun("demo")
+            cfg.soundMode = mode; saveState()
+            if mode != "off" { playFun("demo") }
         }
     }
-    @objc func toggleSound() { cfg.soundEnabled = !cfg.soundOn; saveState(); if cfg.soundOn { playFun("demo") } }
-    @objc func toggleBubble() { cfg.bubbleEnabled = !cfg.bubbleOn; saveState(); if cfg.bubbleOn { showBubble("气泡已开启") } }
     @objc func toggleFilter(_ sender: NSMenuItem) {
         if sender.representedObject as? String == "mention" { cfg.notifyMention.toggle() }
         else { cfg.notifyStatus.toggle() }
@@ -573,7 +529,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 }
 
 extension AppDelegate: NSMenuDelegate {
-    func menuNeedsUpdate(_ menu: NSMenu) { rebuildMenu() }
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        if unreadNew != 0 { unreadNew = 0; refreshIcon() }
+        rebuildMenu()
+    }
 }
 
 // MARK: - 入口
