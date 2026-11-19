@@ -132,6 +132,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         UNUserNotificationCenter.current().delegate = self
 
+        loadSlug()
         loadActors()
         poll()
         scheduleTimer()
@@ -241,6 +242,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }.resume()
     }
 
+    func loadSlug() {
+        guard let creds else { return }
+        let base = creds.server_url.replacingOccurrences(of: "http://", with: "https://")
+        guard let url = URL(string: base + "/api/workspaces") else { return }
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.setValue("Bearer " + creds.token, forHTTPHeaderField: "Authorization")
+        let sc = URLSessionConfiguration.ephemeral
+        sc.connectionProxyDictionary = [:]
+        URLSession(configuration: sc).dataTask(with: req) { [weak self] data, resp, _ in
+            guard let data, (200...299).contains((resp as? HTTPURLResponse)?.statusCode ?? 0),
+                  let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+            let want = self?.creds?.workspace_id ?? ""
+            let hit = arr.first { ($0["id"] as? String) == want } ?? arr.first
+            let slug = (hit?["slug"] as? String) ?? ""
+            DispatchQueue.main.async { self?.wsSlug = slug; dbg("[slug] \(slug)") }
+        }.resume()
+    }
+
     func loadActors() {
         guard let creds else { return }
         let base = creds.server_url.replacingOccurrences(of: "http://", with: "https://")
@@ -297,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     var speaker: AVSpeechSynthesizer?
     var actors: [String: String] = [:]
+    var wsSlug: String = ""
 
     func customSoundURL() -> URL? {
         let dir = home + "/.multica-watchdog"
@@ -398,11 +418,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
     func openIssue(_ iid: String) {
-        // 本地App优先(multica:// scheme),失败回落网页
-        if localAppExists(), let deep = URL(string: "multica://issues/\(iid)") {
-            if NSWorkspace.shared.open(deep) { return }
+        // 官方深链: multica://open/issue?url=<编码后的网页issue地址> (源码 issue-deep-link.ts)
+        if localAppExists(), !wsSlug.isEmpty, !iid.isEmpty {
+            let web = "\(appWebURL)/\(wsSlug)/issues/\(iid)"
+            if let enc = web.addingPercentEncoding(withAllowedCharacters: .alphanumerics),
+               let deep = URL(string: "multica://open/issue?url=\(enc)") {
+                if NSWorkspace.shared.open(deep) { return }
+            }
         }
-        NSWorkspace.shared.open(URL(string: "\(appWebURL)/issues/\(iid)")!)
+        // 回落: 网页
+        if !wsSlug.isEmpty, !iid.isEmpty {
+            NSWorkspace.shared.open(URL(string: "\(appWebURL)/\(wsSlug)/issues/\(iid)")!)
+        } else {
+            NSWorkspace.shared.open(URL(string: appWebURL)!)
+        }
     }
 
     // MARK: 菜单
