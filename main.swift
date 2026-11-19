@@ -320,7 +320,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func customSoundURL() -> URL? {
         let dir = home + "/.multica-watchdog"
-        for ext in ["mp3", "wav", "aiff", "aif", "m4a"] {
+        for ext in ["mp3", "wav", "aiff", "aif", "m4a", "caf"] {
             let p = dir + "/alert." + ext
             if fm.fileExists(atPath: p) { return URL(fileURLWithPath: p) }
         }
@@ -333,8 +333,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case "system":
             NSSound(named: "Ping")?.play()
         case "custom":
-            if let u = customSoundURL(), let snd = NSSound(contentsOf: u, byReference: true) {
-                snd.play()
+            if let u = customSoundURL() {
+                if let snd = NSSound(contentsOf: u, byReference: true) {
+                    if !snd.play() { dbg("[sound] play()返回false: \(u.lastPathComponent)") }
+                } else {
+                    dbg("[sound] 格式不支持(NSSound支持wav/aiff/mp3/m4a/caf,不支持ogg/flac): \(u.lastPathComponent)")
+                    NSSound(named: "Ping")?.play()
+                }
             } else {
                 dbg("[sound] 自定义声音文件缺失,回落Ping")
                 NSSound(named: "Ping")?.play()
@@ -613,15 +618,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             NSApp.activate(ignoringOtherApps: true)
             if panel.runModal() == .OK, let url = panel.url {
                 let ext = url.pathExtension.isEmpty ? "wav" : url.pathExtension
-                let dst = home + "/.multica-watchdog/alert." + ext
-                try? fm.removeItem(atPath: dst)
-                // 清掉旧扩展名的文件
-                for e in ["mp3", "wav", "aiff", "aif", "m4a"] {
-                    try? fm.removeItem(atPath: home + "/.multica-watchdog/alert." + e)
+                let dir = home + "/.multica-watchdog"
+                try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)  // 关键:目录必须先建
+                let dst = dir + "/alert." + ext
+                for e in ["mp3", "wav", "aiff", "aif", "m4a", "caf", ext] {
+                    try? fm.removeItem(atPath: dir + "/alert." + e)
                 }
-                try? fm.copyItem(at: url, to: URL(fileURLWithPath: dst))
-                cfg.soundMode = "custom"; saveState()
-                playFun("demo")
+                do {
+                    try fm.copyItem(at: url, to: URL(fileURLWithPath: dst))
+                    dbg("[sound] 自定义声音已保存: \(dst)")
+                } catch {
+                    dbg("[sound] 拷贝失败: \(error)")
+                }
+                if fm.fileExists(atPath: dst) {
+                    cfg.soundMode = "custom"; saveState()
+                    playFun("demo")
+                }
             }
         } else {
             cfg.soundMode = mode; saveState()
