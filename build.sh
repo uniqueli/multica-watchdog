@@ -9,7 +9,7 @@ APP=MulticaWatchdog.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS"
 cp MulticaWatchdog "$APP/Contents/MacOS/"
-cp Info.plist "$APP/Contents/"
+sed "s/0\.1\.0/0.2.5/" Info.plist > "$APP/Contents/Info.plist"
 codesign --force --sign - --identifier com.uniqueli.multica-watchdog "$APP" 2>/dev/null || true
 mkdir -p "$APP/Contents/Resources"
 cp -r assets/* "$APP/Contents/Resources/"
