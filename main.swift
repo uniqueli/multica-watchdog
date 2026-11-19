@@ -1,6 +1,6 @@
-// multica-notify — Multica 菜单栏通知宠物 🐕
+// multica-watchdog — Multica 菜单栏通知宠物 🐕
 // 轮询 Multica Inbox(mentioned + status_changed) → macOS 系统通知
-// 构建: 见同目录 build.sh; 配置: ~/.multica-notify.json; 凭证: ~/.multica/config.json
+// 构建: 见同目录 build.sh; 配置: ~/.multica-watchdog.json; 凭证: ~/.multica/config.json
 
 import AppKit
 import UserNotifications
@@ -46,14 +46,14 @@ struct InboxItem: Codable {
 enum ConnState { case ok, offline, badCreds }
 
 let home = FileManager.default.homeDirectoryForCurrentUser.path
-let cfgPath = home + "/.multica-notify.json"
-let seenPath = home + "/.multica-notify.seen.json"
+let cfgPath = home + "/.multica-watchdog.json"
+let seenPath = home + "/.multica-watchdog.seen.json"
 let credsPath = home + "/.multica/config.json"
-let launchAgentPlist = home + "/Library/LaunchAgents/com.uniqueli.multica-notify.plist"
+let launchAgentPlist = home + "/Library/LaunchAgents/com.uniqueli.multica-watchdog.plist"
 let intervals: [(Double, String)] = [(30, "30 秒"), (60, "1 分钟"), (300, "5 分钟"), (900, "15 分钟")]
 let watchTypes: Set<String> = ["mentioned", "status_changed"]
 
-let dbgPath = home + "/.multica-notify.log"
+let dbgPath = home + "/.multica-watchdog.log"
 func dbg(_ s: String) {
     let line = "[" + TimeStamp() + "] " + s + "\n"
     FileHandle.standardError.write(line.data(using: .utf8)!)
@@ -377,7 +377,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let plist = """
             <?xml version="1.0" encoding="UTF-8"?>
             <plist version="1.0"><dict>
-              <key>Label</key><string>com.uniqueli.multica-notify</string>
+              <key>Label</key><string>com.uniqueli.multica-watchdog</string>
               <key>ProgramArguments</key><array><string>/usr/bin/open</string><string>-a</string><string>\(bundle)</string></array>
               <key>RunAtLoad</key><true/>
             </dict></plist>
