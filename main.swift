@@ -3,6 +3,7 @@
 // 构建: 见同目录 build.sh; 配置: ~/.multica-watchdog.json; 凭证: ~/.multica/config.json
 
 import AppKit
+import AVFoundation
 import UserNotifications
 import Foundation
 
@@ -13,6 +14,7 @@ struct AppConfig: Codable {
     var paused: Bool = false
     var notifyMention: Bool = true
     var notifyStatus: Bool = true
+    var funMode: Bool = true
     var recent: [RecentItem] = []
 }
 
@@ -108,6 +110,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         poll()
         scheduleTimer()
+
+        if CommandLine.arguments.contains("--demo") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+                self?.notify([InboxItem(id: "demo-\(Int(Date().timeIntervalSince1970))", type: "mentioned",
+                                        title: "趣味模式演示:有人@你啦", read: false, archived: false,
+                                        created_at: nil, issue_id: nil, issue_status: nil)])
+            }
+        }
     }
 
     // MARK: 凭证 / 持久化
@@ -211,10 +221,72 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return d
     }
 
+    // MARK: 趣味效果
+
+    var bubble: NSPanel?
+    var speaker: AVSpeechSynthesizer?
+
+    func playFun(_ kind: String) {
+        guard cfg.funMode else { return }
+        // 语音播报"有消息，快查看";无中文语音时回落系统提示音
+        guard let v = AVSpeechSynthesisVoice(language: "zh-CN") else {
+            NSSound(named: "Ping")?.play(); return
+        }
+        if speaker == nil { speaker = AVSpeechSynthesizer() }
+        speaker?.stopSpeaking(at: .immediate)
+        let u = AVSpeechUtterance(string: "有消息，快查看")
+        u.voice = v
+        u.rate = AVSpeechUtteranceDefaultSpeechRate
+        speaker?.speak(u)
+    }
+
+    func showBubble(_ text: String) {
+        guard cfg.funMode else { return }
+        bubble?.orderOut(nil)
+        guard let btn = statusItem.button, let win = btn.window else { return }
+        let panel = NSPanel(contentRect: .zero, styleMask: [.borderless], backing: .buffered, defer: false)
+        panel.level = .statusBar
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        let label = NSTextField(labelWithString: "🐕💬 " + text)
+        label.font = .systemFont(ofSize: 13, weight: .medium)
+        label.lineBreakMode = .byTruncatingTail
+        label.cell?.truncatesLastVisibleLine = true
+        label.cell?.wraps = false
+        label.wantsLayer = true
+        label.layer?.cornerRadius = 10
+        label.layer?.masksToBounds = true
+        label.layer?.backgroundColor = NSColor.controlBackgroundColor.cgColor
+        label.layer?.borderColor = NSColor.separatorColor.cgColor
+        label.layer?.borderWidth = 1
+        let sz = label.fittingSize
+        label.frame = NSRect(x: 8, y: 6, width: min(sz.width + 8, 420), height: sz.height + 6)
+        panel.setContentSize(NSSize(width: label.frame.maxX + 8, height: label.frame.maxY + 4))
+        panel.contentView = label
+        let btnFrame = win.convertToScreen(btn.convert(btn.bounds, to: nil))
+        panel.setFrameOrigin(NSPoint(x: btnFrame.maxX - panel.frame.width, y: btnFrame.minY - panel.frame.height - 6))
+        bubble = panel
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        NSAnimationContext.runAnimationGroup { ctx in ctx.duration = 0.25; panel.animator().alphaValue = 1 }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+            NSAnimationContext.runAnimationGroup({ ctx in ctx.duration = 0.5; panel.animator().alphaValue = 0 },
+                completionHandler: { panel.orderOut(nil); self?.bubble = nil })
+        }
+    }
+
     // MARK: 通知
 
     func notify(_ items: [InboxItem]) {
         unreadNew += items.count
+        let first = items.first
+        if first?.type == "mentioned" {
+            playFun("mentioned")
+            showBubble("@你: " + (first?.title ?? ""))
+        } else {
+            playFun("status")
+        }
         var cap = items; if cap.count > 5 { cap = Array(cap.prefix(5)) }
         let center = UNUserNotificationCenter.current()
         for it in cap {
@@ -318,6 +390,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         fsub.addItem(fm1); fsub.addItem(fm2)
         filterItem.submenu = fsub
         menu.addItem(filterItem)
+
+        let fun = NSMenuItem(title: (cfg.funMode ? "🎉 趣味模式: 开" : "🎉 趣味模式: 关"),
+                             action: #selector(toggleFun), keyEquivalent: "")
+        fun.target = self; menu.addItem(fun)
         menu.addItem(.separator())
 
         let pause = NSMenuItem(title: cfg.paused ? "▶ 恢复通知" : "⏸ 暂停通知",
@@ -356,6 +432,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         cfg.intervalSec = sender.representedObject as! Double
         saveState(); scheduleTimer(); refreshIcon()
     }
+    @objc func toggleFun() { cfg.funMode.toggle(); saveState(); if cfg.funMode { playFun("status") } }
     @objc func toggleFilter(_ sender: NSMenuItem) {
         if sender.representedObject as? String == "mention" { cfg.notifyMention.toggle() }
         else { cfg.notifyStatus.toggle() }

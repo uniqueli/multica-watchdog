@@ -7,6 +7,8 @@ Multica 菜单栏通知宠物：有人 @你 或 agent 任务完成时，推送 m
 - 轮询 Multica Inbox（`mentioned` + `status_changed`），30秒/1分/5分/15分 快捷切换
 - 未读静默播种：启动时不轰炸历史，只播报近 3 分钟
 - 超过 5 条聚合为一条汇总通知
+- 🎉 趣味模式：语音播报"有消息，快查看"(zh-CN TTS) + 🐕💬 气泡冒泡，菜单可关
+- App 图标 🐕(tools/gen_icon.swift 程序化生成 icns)
 - 通知点击跳转 issue 页面；菜单里保留最近 5 条
 - 暂停/恢复、打开 Multica、开机自启（LaunchAgent）
 - 状态图标：🐕 正常 / 🐕💤 离线 / 🐕❗ 凭证失效
