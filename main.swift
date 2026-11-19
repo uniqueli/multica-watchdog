@@ -63,6 +63,19 @@ let credsPath = home + "/.multica/config.json"
 let launchAgentPlist = home + "/Library/LaunchAgents/com.uniqueli.multica-watchdog.plist"
 let intervals: [(Double, String)] = [(30, "30 秒"), (60, "1 分钟"), (300, "5 分钟"), (900, "15 分钟")]
 let watchTypes: Set<String> = ["mentioned", "status_changed"]
+let APP_VERSION = "0.2.5"
+let RELEASE_API = "https://api.github.com/repos/uniqueli/multica-watchdog/releases/latest"
+
+func isNewer(_ a: String, than b: String) -> Bool {
+    let pa = a.split(separator: ".").map { Int($0) ?? 0 }
+    let pb = b.split(separator: ".").map { Int($0) ?? 0 }
+    for i in 0..<max(pa.count, pb.count) {
+        let x = i < pa.count ? pa[i] : 0
+        let y = i < pb.count ? pb[i] : 0
+        if x != y { return x > y }
+    }
+    return false
+}
 
 extension AppConfig {
     var soundOn: Bool { soundMode != "off" && (soundEnabled ?? funMode ?? true) }
@@ -134,6 +147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         loadSlug()
         loadActors()
+        checkUpdate(manual: false)
         poll()
         scheduleTimer()
 
@@ -312,11 +326,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return d
     }
 
+    func checkUpdate(manual: Bool) {
+        guard let url = URL(string: RELEASE_API) else { return }
+        var req = URLRequest(url: url, timeoutInterval: 15)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        // 注意:GitHub用系统代理(与Multica内网API的绕代理相反)
+        URLSession.shared.dataTask(with: req) { [weak self] data, resp, _ in
+            guard let data, (200...299).contains((resp as? HTTPURLResponse)?.statusCode ?? 0),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tag = obj["tag_name"] as? String else {
+                DispatchQueue.main.async {
+                    dbg("[update] 检查失败(无release或网络不通)")
+                    if manual { self?.updateAlert("检查失败:网络不通或还没有发布过release。\n可手动访问 GitHub releases 页面。") }
+                }
+                return
+            }
+            let remote = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+            let page = (obj["html_url"] as? String) ?? "https://github.com/uniqueli/multica-watchdog/releases/latest"
+            DispatchQueue.main.async {
+                if isNewer(remote, than: APP_VERSION) {
+                    self?.latestReleaseURL = page
+                    dbg("[update] 发现新版 v\(remote)(当前 v\(APP_VERSION))")
+                    if manual { self?.updateAlert("发现新版 v\(remote)!即将打开下载页。\n下载zip后: 退出🐕 → 覆盖 /Applications → 打开") ; NSWorkspace.shared.open(URL(string: page)!) }
+                } else {
+                    self?.latestReleaseURL = nil
+                    if manual { self?.updateAlert("已是最新版本 v\(APP_VERSION) 🐕") }
+                }
+            }
+        }.resume()
+    }
+
+    func updateAlert(_ text: String) {
+        let a = NSAlert()
+        a.messageText = "检查更新"
+        a.informativeText = text
+        a.addButton(withTitle: "好")
+        NSApp.activate(ignoringOtherApps: true)
+        a.runModal()
+    }
+
     // MARK: 趣味效果
 
     var speaker: AVSpeechSynthesizer?
     var actors: [String: String] = [:]
     var wsSlug: String = ""
+    var latestReleaseURL: String? = nil   // 非nil=有新版
 
     func customSoundURL() -> URL? {
         let dir = home + "/.multica-watchdog"
@@ -458,7 +512,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         case .offline: stateStr = "💤 离线(重试中)"
         case .badCreds: stateStr = "❗ 凭证失效(multica login)"
         }
-        menu.addItem(disabled(stateStr))
+        menu.addItem(disabled(stateStr + " · v" + APP_VERSION))
+        if latestReleaseURL != nil {
+            let up = NSMenuItem(title: "⬆️ 有新版本,点击下载", action: #selector(openUpdate), keyEquivalent: "")
+            up.target = self; menu.addItem(up)
+        }
         if effectivePaused {
             let until: String
             if let u = cfg.pausedUntil, u > Date().timeIntervalSince1970 {
@@ -569,6 +627,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
         menu.addItem(.separator())
+        let chk = NSMenuItem(title: "🔄 检查更新", action: #selector(checkNow), keyEquivalent: "")
+        chk.target = self; menu.addItem(chk)
         let restart = NSMenuItem(title: "🔄 重启(更新后生效)", action: #selector(restartApp), keyEquivalent: "r")
         restart.target = self; menu.addItem(restart)
         let perm = NSMenuItem(title: "🔔 开启系统通知权限", action: #selector(openNotifSettings), keyEquivalent: "")
@@ -691,6 +751,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 saveState()
             }
         }
+    }
+    @objc func checkNow() { checkUpdate(manual: true) }
+    @objc func openUpdate() {
+        if let u = latestReleaseURL { NSWorkspace.shared.open(URL(string: u)!) }
     }
     @objc func restartApp() {
         let p = Process()
