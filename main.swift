@@ -130,7 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
                 self?.notify([InboxItem(id: "demo-\(Int(Date().timeIntervalSince1970))", type: "mentioned",
                                         title: "趣味模式演示:有人@你啦", read: false, archived: false,
-                                        created_at: nil, issue_id: nil, issue_status: nil, actor_id: nil, actor_type: nil)])
+                                        created_at: nil, issue_id: "01a1f1cf-bca3-7702-8443-8dd168bc1ff5", issue_status: nil, actor_id: nil, actor_type: nil)])
             }
         }
     }
